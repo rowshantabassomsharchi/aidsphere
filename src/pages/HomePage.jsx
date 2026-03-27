@@ -1,46 +1,72 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { api, saveSession, clearSession } from "../utils/api";
 
 export default function HomePage() {
-  const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem("user"));
+  const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem("aidToken"));
   const [isRegistering, setIsRegistering] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", password: "" });
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
-  const handleAuth = () => {
-    if (!form.name && isRegistering) return alert("Enter your name.");
-    if (!form.email) return alert("Enter your email.");
-    if (!form.password) return alert("Enter your password.");
+  const handleAuth = async () => {
+    // Basic validation
+    if (isRegistering && !form.name) return setError("Enter your name.");
+    if (!form.email) return setError("Enter your email.");
+    if (!form.password) return setError("Enter your password.");
 
-    const user = { name: form.name || form.email.split("@")[0], email: form.email };
-    localStorage.setItem("user", JSON.stringify(user));
-    setIsLoggedIn(true);
+    setLoading(true);
+    setError("");
 
-    const hasProfile = !!localStorage.getItem("userProfile");
-    if (isRegistering || !hasProfile) {
-      navigate("/user");
-    } else {
-      navigate("/symptom");
+    try {
+      if (isRegistering) {
+        // --- REGISTER ---
+        const data = await api.post("/auth/register", {
+          name: form.name,
+          email: form.email,
+          password: form.password,
+        });
+        saveSession(data);
+        setIsLoggedIn(true);
+        navigate("/user"); // new users always go fill profile first
+      } else {
+        // --- LOGIN ---
+        const data = await api.post("/auth/login", {
+          email: form.email,
+          password: form.password,
+        });
+        saveSession(data);
+        setIsLoggedIn(true);
+        // if profile was filled before, go straight to assessment
+        navigate(data.profileComplete ? "/symptom" : "/user");
+      }
+    } catch (err) {
+      setError(err.message); // shows "User already exists", "Invalid email or password" etc.
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleLogout = () => {
-    localStorage.removeItem("user");
+    clearSession();
     setIsLoggedIn(false);
   };
 
-  const user = JSON.parse(localStorage.getItem("user") || "null");
+  // After login, name comes from the token payload stored by saveSession
+  const userName = localStorage.getItem("aidUserName") || "there";
 
   return (
     <div style={styles.page}>
-      {/* Background overlay */}
       <div style={styles.overlay} />
 
       <div style={styles.content}>
         {!isLoggedIn ? (
           <div style={styles.authCard}>
             <div style={styles.authIcon}>🩺</div>
-            <h2 style={styles.authTitle}>{isRegistering ? "Create Account" : "Welcome Back"}</h2>
+            <h2 style={styles.authTitle}>
+              {isRegistering ? "Create Account" : "Welcome Back"}
+            </h2>
             <p style={styles.authSub}>AidSphere Health Risk Platform</p>
 
             <div style={styles.formGroup}>
@@ -68,13 +94,30 @@ export default function HomePage() {
               />
             </div>
 
-            <button onClick={handleAuth} style={styles.authBtn}>
-              {isRegistering ? "Register" : "Login"} →
+            {/* Error message — only shows when there's an error */}
+            {error && <p style={styles.errorMsg}>{error}</p>}
+
+            <button
+              onClick={handleAuth}
+              style={{
+                ...styles.authBtn,
+                opacity: loading ? 0.7 : 1,
+                cursor: loading ? "not-allowed" : "pointer",
+              }}
+              disabled={loading}
+            >
+              {loading ? "Please wait..." : isRegistering ? "Register →" : "Login →"}
             </button>
 
             <p style={styles.toggle}>
               {isRegistering ? "Already have an account?" : "Don't have an account?"}{" "}
-              <span style={styles.toggleLink} onClick={() => setIsRegistering(!isRegistering)}>
+              <span
+                style={styles.toggleLink}
+                onClick={() => {
+                  setIsRegistering(!isRegistering);
+                  setError(""); // clear error when switching modes
+                }}
+              >
                 {isRegistering ? "Login" : "Register"}
               </span>
             </p>
@@ -82,12 +125,14 @@ export default function HomePage() {
         ) : (
           <div style={styles.welcome}>
             <p style={styles.greeting}>Good day,</p>
-            <h1 style={styles.welcomeName}>{user?.name} 👋</h1>
+            <h1 style={styles.welcomeName}>{userName} 👋</h1>
             <p style={styles.question}>How are you feeling today?</p>
             <button onClick={() => navigate("/symptom")} style={styles.logBtn}>
               Log My Symptoms →
             </button>
-            <button onClick={handleLogout} style={styles.logoutBtn}>Logout</button>
+            <button onClick={handleLogout} style={styles.logoutBtn}>
+              Logout
+            </button>
           </div>
         )}
       </div>
@@ -105,7 +150,8 @@ const styles = {
   authSub: { fontSize: "12px", color: "#ffffff", marginBottom: "24px" },
   formGroup: { display: "flex", flexDirection: "column", gap: "10px", marginBottom: "16px" },
   input: { padding: "10px 14px", background: "#161d26", border: "1px solid #1e2a36", borderRadius: "8px", color: "#e8f0f8", fontSize: "13px", fontFamily: "inherit", outline: "none" },
-  authBtn: { width: "100%", padding: "12px", background: "#3a8aaa", color: "#000", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: "700", cursor: "pointer", fontFamily: "inherit" },
+  authBtn: { width: "100%", padding: "12px", background: "#3a8aaa", color: "#000", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: "700", fontFamily: "inherit" },
+  errorMsg: { color: "#e05c5c", fontSize: "13px", marginBottom: "12px", marginTop: "-4px", textAlign: "center" },
   toggle: { fontSize: "12px", color: "#ffffff", marginTop: "16px", marginBottom: 0 },
   toggleLink: { color: "#3a8aaa", cursor: "pointer", fontWeight: "600" },
   welcome: { textAlign: "center" },

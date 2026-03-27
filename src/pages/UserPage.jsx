@@ -1,33 +1,128 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { api, isLoggedIn } from "../utils/api";
 
 const diseaseOptions = ["None", "Diabetes", "Hypertension", "Heart Disease", "Asthma", "Cancer", "Kidney Disease", "Liver Disease", "Thyroid Disorder"];
 const allergyOptions = ["None", "Penicillin", "Aspirin", "Ibuprofen", "Pollen", "Dust", "Peanuts", "Shellfish", "Latex"];
 const bloodTypes = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", "Unknown"];
 
 export default function UserPage() {
-  const user = JSON.parse(localStorage.getItem("user") || "null");
-  const savedProfile = JSON.parse(localStorage.getItem("userProfile") || "null");
+  const navigate = useNavigate();
 
-  const [editing, setEditing] = useState(!savedProfile);
-  const [name, setName] = useState(savedProfile?.name || user?.name || "");
-  const [age, setAge] = useState(savedProfile?.age || "");
-  const [gender, setGender] = useState(savedProfile?.gender || "");
-  const [height, setHeight] = useState(savedProfile?.height || "");
-  const [weight, setWeight] = useState(savedProfile?.weight || "");
-  const [blood, setBlood] = useState(savedProfile?.blood || "");
-  const [diseases, setDiseases] = useState(savedProfile?.diseases || []);
-  const [allergies, setAllergies] = useState(savedProfile?.allergies || []);
-  const [medications, setMedications] = useState(savedProfile?.medications || "");
-  const [smoking, setSmoking] = useState(savedProfile?.smoking || "no");
-  const [alcohol, setAlcohol] = useState(savedProfile?.alcohol || "no");
+  // ── page-level states ──────────────────────────────────────────
+  const [pageLoading, setPageLoading] = useState(true);   // loading profile from API
+  const [saving, setSaving]           = useState(false);  // saving in progress
+  const [error, setError]             = useState("");     // save/load error message
+  const [editing, setEditing]         = useState(false);  // view vs edit mode
+
+  // ── form field states (same as before) ────────────────────────
+  const [name, setName]               = useState("");
+  const [age, setAge]                 = useState("");
+  const [gender, setGender]           = useState("");
+  const [height, setHeight]           = useState("");
+  const [weight, setWeight]           = useState("");
+  const [blood, setBlood]             = useState("");
+  const [diseases, setDiseases]       = useState([]);
+  const [allergies, setAllergies]     = useState([]);
+  const [medications, setMedications] = useState("");
+  const [smoking, setSmoking]         = useState("no");
+  const [alcohol, setAlcohol]         = useState("no");
   const [customDisease, setCustomDisease] = useState("");
   const [customAllergy, setCustomAllergy] = useState("");
 
+  // ── load profile from backend on mount ────────────────────────
+  useEffect(() => {
+    // not logged in → back to home
+    if (!isLoggedIn()) {
+      navigate("/");
+      return;
+    }
+
+    const loadProfile = async () => {
+      try {
+        const data = await api.authGet("/profile");
+
+        if (data && data.name) {
+          // profile exists → populate fields and show view mode
+          setName(data.name || "");
+          setAge(data.age || "");
+          setGender(data.gender || "");
+          setHeight(data.height || "");
+          setWeight(data.weight || "");
+          setBlood(data.bloodType || "");   // note: backend uses "bloodType"
+          setDiseases(data.diseases || []);
+          setAllergies(data.allergies || []);
+          setMedications(data.medications?.join(", ") || "");
+          setSmoking(data.smoking || "no");
+          setAlcohol(data.alcohol || "no");
+          setEditing(false); // show view mode
+        } else {
+          // no profile yet → open edit mode straight away
+          setEditing(true);
+        }
+      } catch (err) {
+        console.error("Failed to load profile:", err.message);
+        // if token is bad/expired, send to login
+        if (err.message.toLowerCase().includes("authorized")) {
+          navigate("/");
+        } else {
+          setError("Could not load your profile. Please try again.");
+          setEditing(true); // let them fill it fresh
+        }
+      } finally {
+        setPageLoading(false);
+      }
+    };
+
+    loadProfile();
+  }, []);
+
+  // ── save profile to backend ───────────────────────────────────
+  const handleSave = async () => {
+    if (!name.trim()) return setError("Enter your name.");
+    if (!age || parseInt(age) < 1) return setError("Enter a valid age.");
+    if (!gender) return setError("Select your gender.");
+
+    setSaving(true);
+    setError("");
+
+    try {
+      await api.authPost("/profile", {
+        name,
+        age: parseInt(age),
+        gender,
+        height: height ? Number(height) : null,
+        weight: weight ? Number(weight) : null,
+        bloodType: blood,          // backend field is "bloodType"
+        diseases,
+        allergies,
+        medications: medications   // backend stores as string, schema handles it
+          ? medications.split(",").map(m => m.trim()).filter(Boolean)
+          : [],
+        smoking,
+        alcohol,
+      });
+
+      // update the name shown on the home welcome screen
+      localStorage.setItem("aidUserName", name);
+      localStorage.setItem("aidProfileComplete", "true");
+      setEditing(false);
+    } catch (err) {
+      setError("Failed to save profile. Please try again.");
+      console.error(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── unchanged helpers ─────────────────────────────────────────
   const toggleItem = (list, setList, item) => {
     if (item === "None") { setList(["None"]); return; }
     setList((prev) => {
       const filtered = prev.filter((i) => i !== "None");
-      return filtered.includes(item) ? filtered.filter((i) => i !== item) : [...filtered, item];
+      return filtered.includes(item)
+        ? filtered.filter((i) => i !== item)
+        : [...filtered, item];
     });
   };
 
@@ -45,26 +140,30 @@ export default function UserPage() {
     }
   };
 
-  const handleSave = () => {
-    if (!name.trim()) return alert("Enter your name.");
-    if (!age || parseInt(age) < 1) return alert("Enter a valid age.");
-    if (!gender) return alert("Select your gender.");
-    localStorage.setItem("userProfile", JSON.stringify({
-      name, age: parseInt(age), gender, height, weight, blood,
-      diseases, allergies, medications, smoking, alcohol
-    }));
-    setEditing(false);
-  };
+  const bmi = height && weight
+    ? (weight / ((height / 100) ** 2)).toFixed(1)
+    : null;
 
-  const bmi = height && weight ? (weight / ((height / 100) ** 2)).toFixed(1) : null;
+  // ── get display email from localStorage ───────────────────────
+  const userEmail = localStorage.getItem("aidUserEmail") || "";
 
+  // ── loading screen ────────────────────────────────────────────
+  if (pageLoading) {
+    return (
+      <div style={{ ...styles.page, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <p style={{ color: "#3a8aaa", fontSize: "15px" }}>Loading your profile...</p>
+      </div>
+    );
+  }
+
+  // ── everything below is identical to your original JSX ────────
   return (
     <div style={styles.page}>
       <div style={styles.wrapper}>
         <div style={styles.header}>
           <div style={styles.avatar}>👤</div>
           <h1 style={styles.title}>Your Health Profile</h1>
-          <p style={styles.sub}>{user?.email}</p>
+          <p style={styles.sub}>{userEmail}</p>
         </div>
 
         {!editing ? (
@@ -72,7 +171,15 @@ export default function UserPage() {
             <div style={styles.card}>
               <p style={styles.sectionLabel}>📋 Personal Information</p>
               <div style={styles.infoGrid}>
-                {[["Name", name], ["Age", age], ["Gender", gender], ["Height", height ? `${height} cm` : "—"], ["Weight", weight ? `${weight} kg` : "—"], ["Blood Type", blood || "—"], ["BMI", bmi || "—"]].map(([label, value]) => (
+                {[
+                  ["Name", name],
+                  ["Age", age],
+                  ["Gender", gender],
+                  ["Height", height ? `${height} cm` : "—"],
+                  ["Weight", weight ? `${weight} kg` : "—"],
+                  ["Blood Type", blood || "—"],
+                  ["BMI", bmi || "—"],
+                ].map(([label, value]) => (
                   <div key={label} style={styles.infoItem}>
                     <p style={styles.infoLabel}>{label}</p>
                     <p style={styles.infoValue}>{value}</p>
@@ -106,25 +213,41 @@ export default function UserPage() {
             <div style={styles.card}>
               <p style={styles.sectionLabel}>🚬 Lifestyle</p>
               <div style={styles.infoGrid}>
-                <div style={styles.infoItem}><p style={styles.infoLabel}>Smoking</p><p style={styles.infoValue}>{smoking}</p></div>
-                <div style={styles.infoItem}><p style={styles.infoLabel}>Alcohol</p><p style={styles.infoValue}>{alcohol}</p></div>
+                <div style={styles.infoItem}>
+                  <p style={styles.infoLabel}>Smoking</p>
+                  <p style={styles.infoValue}>{smoking}</p>
+                </div>
+                <div style={styles.infoItem}>
+                  <p style={styles.infoLabel}>Alcohol</p>
+                  <p style={styles.infoValue}>{alcohol}</p>
+                </div>
               </div>
             </div>
 
-            <button onClick={() => setEditing(true)} style={styles.editBtn}>Edit Profile ✏️</button>
+            <button onClick={() => setEditing(true)} style={styles.editBtn}>
+              Edit Profile ✏️
+            </button>
           </>
         ) : (
           <>
             <div style={styles.card}>
               <p style={styles.sectionLabel}>📋 Personal Information</p>
               <div style={styles.grid}>
-                {[["Full Name", name, setName, "text", "e.g. Ahmad Hassan"],
+                {[
+                  ["Full Name", name, setName, "text", "e.g. Ahmad Hassan"],
                   ["Age", age, setAge, "number", "e.g. 28"],
                   ["Height (cm)", height, setHeight, "number", "e.g. 170"],
-                  ["Weight (kg)", weight, setWeight, "number", "e.g. 65"]].map(([label, val, setter, type, ph]) => (
+                  ["Weight (kg)", weight, setWeight, "number", "e.g. 65"],
+                ].map(([label, val, setter, type, ph]) => (
                   <div key={label} style={styles.formGroup}>
                     <label style={styles.label}>{label}</label>
-                    <input style={styles.input} type={type} placeholder={ph} value={val} onChange={(e) => setter(e.target.value)} />
+                    <input
+                      style={styles.input}
+                      type={type}
+                      placeholder={ph}
+                      value={val}
+                      onChange={(e) => setter(e.target.value)}
+                    />
                   </div>
                 ))}
                 <div style={styles.formGroup}>
@@ -165,8 +288,8 @@ export default function UserPage() {
                 ))}
               </div>
               <div style={{ display: "flex", gap: "8px", marginBottom: "20px" }}>
-                <input style={{ ...styles.input, flex: 1 }} placeholder="Add custom condition..." value={customDisease}
-                  onChange={(e) => setCustomDisease(e.target.value)}
+                <input style={{ ...styles.input, flex: 1 }} placeholder="Add custom condition..."
+                  value={customDisease} onChange={(e) => setCustomDisease(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && addCustomDisease()} />
                 <button onClick={addCustomDisease}
                   style={{ padding: "9px 16px", background: "#3a8aaa", border: "none", borderRadius: "8px", color: "#000", fontWeight: "700", cursor: "pointer", fontFamily: "inherit" }}>
@@ -190,8 +313,8 @@ export default function UserPage() {
                 ))}
               </div>
               <div style={{ display: "flex", gap: "8px", marginBottom: "20px" }}>
-                <input style={{ ...styles.input, flex: 1 }} placeholder="Add custom allergy..." value={customAllergy}
-                  onChange={(e) => setCustomAllergy(e.target.value)}
+                <input style={{ ...styles.input, flex: 1 }} placeholder="Add custom allergy..."
+                  value={customAllergy} onChange={(e) => setCustomAllergy(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && addCustomAllergy()} />
                 <button onClick={addCustomAllergy}
                   style={{ padding: "9px 16px", background: "#f59e0b", border: "none", borderRadius: "8px", color: "#000", fontWeight: "700", cursor: "pointer", fontFamily: "inherit" }}>
@@ -201,7 +324,9 @@ export default function UserPage() {
 
               <p style={styles.label}>Current Medications</p>
               <input style={{ ...styles.input, width: "100%", boxSizing: "border-box", marginTop: "8px" }}
-                placeholder="e.g. Metformin, Lisinopril" value={medications} onChange={(e) => setMedications(e.target.value)} />
+                placeholder="e.g. Metformin, Lisinopril"
+                value={medications}
+                onChange={(e) => setMedications(e.target.value)} />
             </div>
 
             <div style={styles.card}>
@@ -221,7 +346,16 @@ export default function UserPage() {
               ))}
             </div>
 
-            <button onClick={handleSave} style={styles.saveBtn}>Save Profile ✓</button>
+            {/* error message shown above the save button */}
+            {error && <p style={styles.errorMsg}>{error}</p>}
+
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              style={{ ...styles.saveBtn, opacity: saving ? 0.7 : 1, cursor: saving ? "not-allowed" : "pointer" }}
+            >
+              {saving ? "Saving..." : "Save Profile ✓"}
+            </button>
           </>
         )}
       </div>
@@ -254,6 +388,7 @@ const styles = {
   chipDisease: { background: "rgba(239,68,68,0.12)", border: "1px solid #ef4444", color: "#ef4444", fontWeight: "600" },
   chipAllergy: { background: "rgba(245,158,11,0.12)", border: "1px solid #f59e0b", color: "#f59e0b", fontWeight: "600" },
   chipInactive: { background: "transparent", color: "#6b7f96" },
-  saveBtn: { width: "100%", padding: "13px", background: "#3a8aaa", color: "#000", border: "none", borderRadius: "10px", fontSize: "14px", fontWeight: "700", cursor: "pointer", fontFamily: "inherit" },
+  saveBtn: { width: "100%", padding: "13px", background: "#3a8aaa", color: "#000", border: "none", borderRadius: "10px", fontSize: "14px", fontWeight: "700", fontFamily: "inherit" },
   editBtn: { width: "100%", padding: "13px", background: "transparent", color: "#3a8aaa", border: "1px solid #3a8aaa", borderRadius: "10px", fontSize: "14px", fontWeight: "600", cursor: "pointer", fontFamily: "inherit" },
+  errorMsg: { color: "#e05c5c", fontSize: "13px", marginBottom: "10px", textAlign: "center" },
 };
